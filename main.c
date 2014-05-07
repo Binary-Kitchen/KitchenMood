@@ -1,0 +1,205 @@
+#include <avr/io.h>
+#include <string.h>
+
+// This is the program code for the 30 channel (10 channel RGB) DMX controlled
+// dimmer made for OHM2013 by SA007.
+
+// See https://ohm2013.org/wiki/DMX_lighting for interfacing specs.
+
+// Hardware defines:
+// Outputs:
+// 	Red	Green	Blue
+// X1	PF1	PF2	PF3
+// X2	PA0	PA1	PA2
+// X3	PA3	PA4	PA5
+// X4	PA6	PA7	PG2
+// X5	PC7	PC6	PC5
+// X6	PC4	PC3	PC2
+// X7	PC1	PC0	PG1
+// X8	PG0	PD7	PD6
+// X9	PD5	PD4	PD3
+// X10	PD2	PD1	PD0
+// If you don't like this, complain to Atmel, this is the chip's physical layout.
+
+// Green led (ON) : PE6
+// Red   led (ACT): PE3
+
+// Inputs:
+// 9 bit DMX address: PB0 .. PB7, PG3.
+// DMX in: PE0 (RXD)
+
+#define ACTON  PORTE |=  0x08;
+#define ACTOFF PORTE &= ~0x08;
+#define ONON   PORTE |=  0x40;
+#define ONOFF  PORTE |= ~0x40;
+
+#define PWMCHANNELS 30
+
+void inithw(void);
+
+// PWM values
+void pwminterrupt(void);
+unsigned char pwmdata1[PWMCHANNELS];
+unsigned char pwmdata2[PWMCHANNELS];
+unsigned char *datatouse, *databeingused;
+unsigned char pwmstep;
+// There are two datasets, so that the current PWM and data receive don't consufe each other.
+// receive shouldn't touch 'databeingused' and signals to the PWM with 'datatouse' is the data is complete.
+
+// ^^ not actually used, but it was a nice idea :)
+
+// DMX values
+unsigned char breakReceived; // This will turn one on after the first break ever, this makes sure that the first data received is correct.
+unsigned int dmxAddress; // Current address receiving on
+unsigned int dmxListening; // Current address listening on, is updated every break from the dipswitches
+unsigned char uartStatus, uartData;
+
+void set(unsigned ch, unsigned char r, unsigned char g, unsigned char b) {
+  pwmdata1[(ch*3) + 0] = r;
+  pwmdata1[(ch*3) + 1] = g;
+  pwmdata1[(ch*3) + 2] = b;
+}
+
+int main(void) {
+  unsigned int i;
+  memset(pwmdata1,0,PWMCHANNELS);
+  memset(pwmdata2,0,PWMCHANNELS);
+  inithw();
+  ONON;
+  breakReceived = 0;
+  databeingused = pwmdata1;
+  datatouse = pwmdata1;
+  dmxListening = 1;
+
+  set(0, 255, 255, 255);
+
+  while(1) {
+    // UART is explicitely not done in interrupts because
+    // it is hardware buffered and can stand being interrupted
+    // The PWM does not like being interrupted :)
+    ACTOFF;
+    uartStatus = UCSRA;
+    if (uartStatus & 0x80) { // RXComplete bit
+      uartData = UDR;
+      if (uartStatus & 0x10) { // FrameError bit
+        ACTON;
+        breakReceived = 1;
+        dmxAddress = 0;
+        dmxListening = (PINB^0xFF) + 1; // Bit 9 is PG3
+        if (!(PING & 0x08)) dmxListening += 0x100;
+      } else { // Good frame received
+        if ((dmxAddress >= dmxListening) && (dmxAddress < dmxListening+PWMCHANNELS)) {
+          datatouse[dmxAddress-dmxListening] = uartData;
+          // TODO data register
+        }
+        dmxAddress++;
+      }
+    }
+ pwminterrupt();
+  }
+}
+
+void inithw(void) {
+  DDRA = 0xFF;
+  DDRB = 0x0;
+  DDRC = 0xFF;
+  DDRD = 0xFF;
+  DDRE = 0x48;
+  DDRF = 0x0E;
+
+  // Pull-ups
+  PORTB = 0xFF;
+  PORTG = 0x08;
+
+  //250kbaud at 16mhz
+  UBRRL = 3;
+  UBRRH = 0;
+  // enable RX
+  UCSRB = (1<<RXEN);
+
+  // Set frame format: 9data UCSZ0 = 7, 8data UCSZ0 = 3, 1stop bit
+  UCSRC = (1<<UCSZ0)|(1<<UCSZ1)|(1<<USBS);
+
+  //TODO: PWM
+}
+
+void pwminterrupt() {
+  unsigned char pwmcount;
+  // This does the PWM (d0h).
+  // Main qualities of this code are:
+  // Fast, should run very often to gat a smooth pwm
+  // Staggered, so the PWM current is limited
+
+  // Staggering is done by shifting the PWM value trough
+  // the outputs, using the ROL instruction, which is
+  // strangly 'optimized' to adc by the compiler which is identical
+
+#define pwm(CHAN, PORT, VAL) if (databeingused[CHAN] > pwmcount) { PORT |= VAL; } else { PORT &= ~VAL; asm("nop"::); }
+//#define rol() asm("rol %0" : "=r" (pwmcount) : "0" (pwmcount))
+#define rol() pwmcount += 8;
+
+  pwmstep++;
+  pwmcount = pwmstep;
+
+  pwm(0,PORTF,0x02);
+  rol();
+  pwm(1,PORTF,0x04);
+  rol();
+  pwm(2,PORTF,0x08);
+  rol();
+  pwm(3,PORTA,0x01);
+  rol();
+  pwm(4,PORTA,0x02);
+  rol();
+  pwm(5,PORTA,0x04);
+  rol();
+  pwm(6,PORTA,0x08);
+  rol();
+  pwm(7,PORTA,0x10);
+  rol();
+  pwm(8,PORTA,0x20);
+  rol();
+  pwm(9,PORTA,0x40);
+  rol();
+  pwm(10,PORTA,0x80);
+  rol();
+  pwm(11,PORTG,0x04);
+  rol();
+  pwm(12,PORTC,0x80);
+  rol();
+  pwm(13,PORTC,0x40);
+  rol();
+  pwm(14,PORTC,0x20);
+  rol();
+  pwm(15,PORTC,0x10);
+  rol();
+  pwm(16,PORTC,0x08);
+  rol();
+  pwm(17,PORTC,0x04);
+  rol();
+  pwm(18,PORTC,0x02);
+  rol();
+  pwm(19,PORTC,0x01);
+  rol();
+  pwm(20,PORTG,0x02);
+  rol();
+  pwm(21,PORTG,0x01);
+  rol();
+  pwm(22,PORTD,0x80);
+  rol();
+  pwm(23,PORTD,0x40);
+  rol();
+  pwm(24,PORTD,0x20);
+  rol();
+  pwm(25,PORTD,0x10);
+  rol();
+  pwm(26,PORTD,0x08);
+  rol();
+  pwm(27,PORTD,0x04);
+  rol();
+  pwm(28,PORTD,0x02);
+  rol();
+  pwm(29,PORTD,0x01);
+
+  if (pwmstep == 0xFF) databeingused = datatouse;
+}
