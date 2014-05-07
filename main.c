@@ -1,6 +1,8 @@
 #include <avr/io.h>
 #include <string.h>
 
+#include <avr/interrupt.h>
+
 // This is the program code for the 30 channel (10 channel RGB) DMX controlled
 // dimmer made for OHM2013 by SA007.
 
@@ -60,8 +62,22 @@ void set(unsigned ch, unsigned char r, unsigned char g, unsigned char b) {
   pwmdata1[(ch*3) + 2] = b;
 }
 
+ISR(TIMER0_OVF_vect)
+{
+  static unsigned char r=0, g=0, b=0;
+
+  r++; g-=2; b+=3;
+
+  unsigned char x=r, y=g, z=b;
+  for(int i = 0 ; i < 10 ; i++) {
+    set(i,x,y,z);
+    x += 10;
+    y += 10;
+    z += 10;
+  }
+}
+
 int main(void) {
-  unsigned int i;
   memset(pwmdata1,0,PWMCHANNELS);
   memset(pwmdata2,0,PWMCHANNELS);
   inithw();
@@ -71,7 +87,18 @@ int main(void) {
   datatouse = pwmdata1;
   dmxListening = 1;
 
-  set(0, 255, 255, 255);
+  TCCR0A = (1<<CS00)|(1<<CS02);
+  TCNT0 = 244;
+  TIMSK0 |= (1<<TOIE0);
+  sei();
+  //cli();
+
+  //memset(pwmdata1, 0xff, 30);
+#if 0
+  for(int i=0;i<10;i++)
+  set(i, 0, 0, 255);
+#endif
+
 
   while(1) {
     // UART is explicitely not done in interrupts because
