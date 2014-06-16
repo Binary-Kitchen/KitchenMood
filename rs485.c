@@ -76,9 +76,8 @@ ISR(USART0_RX_vect)
         uint8_t crc = in;
         if (crc == 0xaa) {
             if (dst == rs485_myid) {
-                //ACTOFF;
+                ACTOFF;
                 recv = 1;
-                // Hey here we are
             }
         }
         goto reset;
