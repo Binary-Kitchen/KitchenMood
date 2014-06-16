@@ -78,7 +78,7 @@ OBJDIR = obj
 
 
 # List C source files here. (C dependencies are automatically generated.)
-SRC = main.c
+SRC = main.c rs485.c
 
 
 # List C++ source files here. (C dependencies are automatically generated.)

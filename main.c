@@ -1,7 +1,11 @@
-#include <avr/io.h>
 #include <string.h>
 
+#include <avr/io.h>
+#include <util/delay.h>
 #include <avr/interrupt.h>
+
+#include "common.h"
+#include "rs485.h"
 
 // This is the program code for the 30 channel (10 channel RGB) DMX controlled
 // dimmer made for OHM2013 by SA007.
@@ -30,19 +34,11 @@
 // 9 bit DMX address: PB0 .. PB7, PG3.
 // DMX in: PE0 (RXD)
 
-#define ACTON  PORTE |=  0x08;
-#define ACTOFF PORTE &= ~0x08;
-#define ONON   PORTE |=  0x40;
-#define ONOFF  PORTE |= ~0x40;
-
-#define PWMCHANNELS 30
-
 void inithw(void);
 
 // PWM values
 void pwminterrupt(void);
-unsigned char pwmdata1[PWMCHANNELS];
-unsigned char pwmdata2[PWMCHANNELS];
+unsigned char pwmdata[PWMCHANNELS];
 unsigned char *datatouse, *databeingused;
 unsigned char pwmstep;
 // There are two datasets, so that the current PWM and data receive don't consufe each other.
@@ -56,73 +52,30 @@ unsigned int dmxAddress; // Current address receiving on
 unsigned int dmxListening; // Current address listening on, is updated every break from the dipswitches
 unsigned char uartStatus, uartData;
 
-void set(unsigned ch, unsigned char r, unsigned char g, unsigned char b) {
-  pwmdata1[(ch*3) + 0] = r;
-  pwmdata1[(ch*3) + 1] = g;
-  pwmdata1[(ch*3) + 2] = b;
-}
-
-ISR(TIMER0_OVF_vect)
-{
-  static unsigned char r=0, g=0, b=0;
-
-  r++; g-=2; b+=3;
-
-  unsigned char x=r, y=g, z=b;
-  for(int i = 0 ; i < 10 ; i++) {
-    set(i,x,y,z);
-    x += 10;
-    y += 10;
-    z += 10;
-  }
-}
-
 int main(void) {
-  memset(pwmdata1,0,PWMCHANNELS);
-  memset(pwmdata2,0,PWMCHANNELS);
   inithw();
+  init_rs485();
+
+  databeingused = datatouse = pwmdata;
+
+  memset(pwmdata, 0, PWMCHANNELS);
+
   ONON;
-  breakReceived = 0;
-  databeingused = pwmdata1;
-  datatouse = pwmdata1;
-  dmxListening = 1;
-
-  TCCR0A = (1<<CS00)|(1<<CS02);
-  TCNT0 = 244;
-  TIMSK0 |= (1<<TOIE0);
-  sei();
-  //cli();
-
-  //memset(pwmdata1, 0xff, 30);
-#if 0
-  for(int i=0;i<10;i++)
-  set(i, 0, 0, 255);
-#endif
-
 
   while(1) {
     // UART is explicitely not done in interrupts because
     // it is hardware buffered and can stand being interrupted
     // The PWM does not like being interrupted :)
-    ACTOFF;
-    uartStatus = UCSRA;
-    if (uartStatus & 0x80) { // RXComplete bit
-      uartData = UDR;
-      if (uartStatus & 0x10) { // FrameError bit
-        ACTON;
-        breakReceived = 1;
-        dmxAddress = 0;
-        dmxListening = (PINB^0xFF) + 1; // Bit 9 is PG3
-        if (!(PING & 0x08)) dmxListening += 0x100;
-      } else { // Good frame received
-        if ((dmxAddress >= dmxListening) && (dmxAddress < dmxListening+PWMCHANNELS)) {
-          datatouse[dmxAddress-dmxListening] = uartData;
-          // TODO data register
-        }
-        dmxAddress++;
-      }
+    pwminterrupt();
+    if (recv && payload_length == PWMCHANNELS)
+    {
+        cli();
+
+        recv = 0;
+        memcpy((void*)pwmdata, (const void*)buffer, PWMCHANNELS);
+
+        sei();
     }
- pwminterrupt();
   }
 }
 
@@ -137,17 +90,6 @@ void inithw(void) {
   // Pull-ups
   PORTB = 0xFF;
   PORTG = 0x08;
-
-  //250kbaud at 16mhz
-  UBRRL = 3;
-  UBRRH = 0;
-  // enable RX
-  UCSRB = (1<<RXEN);
-
-  // Set frame format: 9data UCSZ0 = 7, 8data UCSZ0 = 3, 1stop bit
-  UCSRC = (1<<UCSZ0)|(1<<UCSZ1)|(1<<USBS);
-
-  //TODO: PWM
 }
 
 void pwminterrupt() {
